@@ -18,10 +18,6 @@ static string makeOutputPath(const string &inputPath, const string &mode) {
     return inputPath.substr(0, pos) + suffix + inputPath.substr(pos);
 }
 
-// Apply a simple dog-vision simulation:
-// - approximate dichromatic (deuteranopia-like) color mapping
-// - slightly blur to simulate lower acuity
-// - boost brightness/contrast slightly for low-light sensitivity
 // ---------- DOG VISION ----------
 static Mat simulateDogVision(const Mat &src) {
     Mat img;
