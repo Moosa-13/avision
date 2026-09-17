@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Proto.xml - the build definition read by sdc (the Super Duper Compiler).
+
+    sdc build   compile the C++ sources into libavision.so, plus the executables
+    sdc -t      compile the test binaries
+    sdc -b      both of the above
+    sdc run     execute the test suite (needs -t built first)
+
+  Paths are relative to this file. ${TOKEN} placeholders are expanded by sdc;
+  see `sdc -h` for the full list.
+-->
+<Proto name="avision" version="0.2.0">
+
+  <Settings>
+    <Compiler>g++</Compiler>
+    <Standard>c++17</Standard>
+    <BuildDir>build</BuildDir>
+    <!-- "auto" uses one job per CPU. -->
+    <Jobs>auto</Jobs>
+  </Settings>
+
+  <Flags>
+    <Common>-Wall -Wextra -fPIC</Common>
+    <Release>-O2 -DNDEBUG</Release>
+    <Debug>-O0 -g</Debug>
+  </Flags>
+
+  <!--
+    pkg-config packages. `components` is deliberate: opencv4.pc advertises every
+    module OpenCV ships (60+ libraries), but this project uses three. Linking
+    the lot would produce a binary the slim runtime image cannot load, since it
+    installs only core, imgproc and imgcodecs.
+  -->
+  <Packages>
+    <Package name="opencv4" components="opencv_core opencv_imgproc opencv_imgcodecs"/>
+  </Packages>
+
+  <!--
+    Files written before compilation. @TOKEN@ placeholders in the input are
+    replaced with the values below. A Var marked volatile="true" changes on
+    every build, so it is excluded from the up-to-date check - otherwise
+    stamping the build time would force a full rebuild every single time.
+  -->
+  <Generate>
+    <Configure input="src/version.hpp.in" output="${BUILD_DIR}/generated/version.hpp">
+      <Var name="AVISION_VERSION" value="${PROTO_VERSION}"/>
+      <Var name="AVISION_COMMIT" value="${GIT_COMMIT}"/>
+      <Var name="AVISION_BUILD_TIME" value="${BUILD_TIME}" volatile="true"/>
+    </Configure>
+  </Generate>
+
+  <Includes>
+    <Dir>src</Dir>
+    <Dir>third_party</Dir>
+    <Dir>${BUILD_DIR}/generated</Dir>
+  </Includes>
+
+  <!-- ===================== sdc build ===================== -->
+
+  <Library name="avision" type="shared">
+    <Sources>
+      <File>src/vision.cpp</File>
+      <File>src/server.cpp</File>
+    </Sources>
+    <Link>
+      <Lib>pthread</Lib>
+    </Link>
+  </Library>
+
+  <Executable name="VisionEngine">
+    <Sources>
+      <File>src/main.cpp</File>
+    </Sources>
+    <Uses>avision</Uses>
+  </Executable>
+
+  <!-- ====================== sdc -t ======================= -->
+
+  <Tests>
+    <Executable name="avision_compare">
+      <Sources>
+        <File>tests/compare.cpp</File>
+      </Sources>
+      <Uses>avision</Uses>
+    </Executable>
+
+    <Executable name="avision_make_fixture">
+      <Sources>
+        <File>tests/make_fixture.cpp</File>
+      </Sources>
+      <Uses>avision</Uses>
+    </Executable>
+
+    <Suite name="suite" command="tests/run_tests.sh" timeout="300">
+      <Arg>${BIN_DIR}/VisionEngine</Arg>
+      <Arg>${BIN_DIR}/avision_compare</Arg>
+      <Arg>${BIN_DIR}/avision_make_fixture</Arg>
+    </Suite>
+  </Tests>
+
+</Proto>

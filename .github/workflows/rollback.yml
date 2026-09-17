@@ -1,0 +1,147 @@
+name: Rollback
+
+# Moves the `production` tag back to an earlier build. Nothing is rebuilt: the
+# previous image is retagged by digest, so you get back exactly the artifact
+# that was live before, not a fresh compile of old source.
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Tag or digest to restore (e.g. sha-a1b2c3d). Leave empty to pick the previous build automatically.'
+        required: false
+        type: string
+      dry_run:
+        description: 'Resolve and verify the target without moving `production`.'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Compute image name
+        id: name
+        run: |
+          set -euo pipefail
+          repo=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')
+          echo "image=${REGISTRY}/${repo}" >> "$GITHUB_OUTPUT"
+          echo "package=${repo##*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve the target
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ steps.name.outputs.image }}
+          PACKAGE: ${{ steps.name.outputs.package }}
+          REQUESTED: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${REQUESTED}" ]]; then
+            echo "Using the requested target: ${REQUESTED}"
+            echo "ref=${REQUESTED}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "No target given; looking for the build before the current one."
+
+          # Container versions, newest first. Works for a user-owned package
+          # linked to this repo; if your account is an org, swap `users` for
+          # `orgs` on the line below.
+          versions=$(gh api --paginate \
+            "/users/${{ github.repository_owner }}/packages/container/${PACKAGE}/versions" \
+            --jq '[.[] | {created: .created_at, tags: .metadata.container.tags}]
+                  | sort_by(.created) | reverse') || {
+            echo "::error::Could not list package versions. Re-run with an explicit \`target\`."
+            exit 1
+          }
+
+          # The build currently serving production, and the newest sha- build
+          # older than it.
+          current=$(echo "${versions}" \
+            | jq -r 'map(select(.tags | index("production"))) | .[0].created // empty')
+
+          if [[ -z "${current}" ]]; then
+            echo "::error::Nothing is tagged \`production\` yet -- there is no previous version to restore."
+            exit 1
+          fi
+
+          previous=$(echo "${versions}" | jq -r --arg cur "${current}" '
+            map(select(.created < $cur))
+            | map(select(.tags | map(startswith("sha-")) | any))
+            | .[0].tags | map(select(startswith("sha-"))) | .[0] // empty')
+
+          if [[ -z "${previous}" ]]; then
+            echo "::error::No earlier \`sha-\` build found to roll back to."
+            exit 1
+          fi
+
+          echo "Previous build: ${previous}"
+          echo "ref=${previous}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the target is real and runs
+        env:
+          IMAGE: ${{ steps.name.outputs.image }}
+          REF: ${{ steps.resolve.outputs.ref }}
+        run: |
+          set -euo pipefail
+
+          # A digest is addressed with @, a tag with :.
+          if [[ "${REF}" == sha256:* ]]; then
+            target="${IMAGE}@${REF}"
+          else
+            target="${IMAGE}:${REF}"
+          fi
+          echo "target=${target}" >> "$GITHUB_ENV"
+
+          docker buildx imagetools inspect "${target}" > /dev/null
+          echo "Target exists. Build metadata it reports:"
+          docker run --rm --entrypoint /usr/local/bin/VisionEngine "${target}" --version
+
+      - name: Move `production`
+        if: ${{ !inputs.dry_run }}
+        env:
+          IMAGE: ${{ steps.name.outputs.image }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create --tag "${IMAGE}:production" "${target}"
+          echo "production now points at ${target}"
+
+      - name: Confirm what is live
+        if: ${{ !inputs.dry_run }}
+        env:
+          IMAGE: ${{ steps.name.outputs.image }}
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint /usr/local/bin/VisionEngine \
+            "${IMAGE}:production" --version
+
+      - name: Summarise
+        run: |
+          {
+            if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+              echo "### Rollback (dry run)"
+              echo
+              echo "Would have pointed \`production\` at \`${target}\`. Nothing was changed."
+            else
+              echo "### Rolled back"
+              echo
+              echo "\`production\` now points at \`${target}\`."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
