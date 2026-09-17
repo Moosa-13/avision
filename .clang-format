@@ -1,0 +1,12 @@
+# Chosen to match the code already in src/ and tests/ rather than impose a new
+# style, so enabling the formatter does not rewrite every line.
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 90
+PointerAlignment: Right
+DerivePointerAlignment: false
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortCaseLabelsOnASingleLine: true
+SortIncludes: false
+IndentCaseLabels: false
